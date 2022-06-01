@@ -99,7 +99,7 @@ def main():
 
 
     # #### plotting an example event
-    example_event = event_types['proton'][2][2]
+    example_event = event_types['gamma'][2][1]
     fig, axs = plt.subplots(2,2,figsize=(12,10))
     for i,ax in enumerate(axs.flatten()):
         ax_temp = ax.scatter(camera_coord['x'], camera_coord['y'], c=example_event[i])
@@ -145,7 +145,7 @@ def main():
             pe = np.concatenate(pe, axis=0).flatten()
             x = np.concatenate(x, axis=0).flatten()
             y = np.concatenate(y, axis=0).flatten()
-            if(np.sum(pe) > 1000):
+            if(np.sum(pe) > 5000):
                 max_pe = np.max(pe)
                 max_pe_index = np.argmax(pe)
                 #let's define the connections (edges) between the nodes here
@@ -178,7 +178,7 @@ def main():
                     data = Data(x=nodes, edge_index=edge_index.t().contiguous(), y=0)
                 data_list.append(data)
 
-    dataset = MyDataset('/home/woody/caph/mppi067h/gamma_ray_reconstruction_with_ml/gnn/test_data_10cm','test',data_list)
+    dataset = MyDataset('/home/woody/caph/mppi067h/gamma_ray_reconstruction_with_ml/gnn/test_data_10cm_5000pe','test',data_list)
     dataset.process()
 
 if __name__ == "__main__":

@@ -113,6 +113,7 @@ class GCN(GNN):
         x = self.drop5(x)
         # Read-out
         x = self.out(x)
+        x = F.softmax(x, dim=1)
         return x
 
     @torch.no_grad()
@@ -183,7 +184,6 @@ def run(rank, world_size, dataset, model_dir, num_epochs, batch_size, file_ini, 
     model = DistributedDataParallel(model, device_ids=[rank])
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     criterion = torch.nn.CrossEntropyLoss()
-    
     for epoch in range(1, num_epochs+1):
         #print("starting", epoch)
         model.train()
@@ -192,21 +192,18 @@ def run(rank, world_size, dataset, model_dir, num_epochs, batch_size, file_ini, 
         for idx in range(file_ini,train_test_split):
             train_dataset = list()
             for cr_type in cr_types:
-                #print(idx, cr_type, rank)
                 dataset_temp = dataset.get(cr_type,idx)
                 train_dataset_temp = list(chunks(dataset_temp, int(len(dataset_temp)/world_size)))[rank]
                 train_dataset += train_dataset_temp
-            #print(len(train_dataset), rank)
             train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
             for bidx, data in enumerate(train_loader):  # Iterate in batches over the training dataset.
                 data = data.to(rank)
-                #print("in the training loop", cr_type, idx, epoch, bidx, rank)
                 out = model(data)
                 loss = criterion(out, data.y)  # Compute the loss.
                 loss.backward()  # Derive gradients.
                 optimizer.step()  # Update parameters based on gradients.
                 optimizer.zero_grad()  # Clear gradients.
-        #print('........finished', rank)           
+        
         dist.barrier()          
         if rank == 0:
             print(f'Epoch: {epoch:03d}, Loss: {loss:.4f}')
@@ -224,21 +221,20 @@ def run(rank, world_size, dataset, model_dir, num_epochs, batch_size, file_ini, 
                 with torch.no_grad():
                     for bidx, data in enumerate(test_loader):  # Iterate in batches over the training/test dataset.
                         data = data.to(rank)
-                        #print("in the test loop", cr_type, idx, epoch, bidx, rank)
                         out = model.module.inference(data)
-                        #out = model(data)
                         pred = out.argmax(dim=1)  # Use the class with highest probability.
                         correct += int((pred == data.y).sum())  # Check against ground-truth labels.
                     total_samples += len(test_loader.dataset)
             test_acc = correct/total_samples
             print(f'Epoch: {epoch:03d}, Test Acc: {test_acc:.4f}')
-            torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'loss': loss,
-            'test_acc': test_acc,
-            }, model_dir + f'/model_{epoch}_{test_acc:.2f}.pth')
+            torch.save(model.state_dict(),model_dir + f'/model_{epoch}_{test_acc:.2f}.pth')
+            # torch.save({
+            # 'epoch': epoch,
+            # 'model_state_dict': model.state_dict(),
+            # 'optimizer_state_dict': optimizer.state_dict(),
+            # 'loss': loss,
+            # 'test_acc': test_acc,
+            # }, model_dir + f'/model_{epoch}_{test_acc:.2f}.pth')
         dist.barrier()
     dist.destroy_process_group()
 
@@ -251,7 +247,7 @@ if __name__ == '__main__':
     dataset_name = 'test'
     
     dataset = MyDataset(outdir,dataset_name,indir,1)
-    num_epochs = 30
+    num_epochs = 50
     batch_size = 64
     file_ini = 0 
     file_end = 30

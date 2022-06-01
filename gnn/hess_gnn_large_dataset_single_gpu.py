@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 import os
+import shutil
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -133,72 +134,136 @@ def train(model, criterion, optimizer, file_ini, train_test_split, batch_size, d
         for data in train_loader:  # Iterate in batches over the training dataset.
             data = data.to(device)
             out = model(data)
-            #print(out.shape, out.dtype, data.y.unsqueeze(1).shape, data.y.unsqueeze(1).dtype)
-            loss = criterion(out, data.y.unsqueeze(1).float())  # Compute the loss.
-            #loss = criterion(torch.squeeze(out), data.y)
+            loss = criterion(out, data.y[:,-1].unsqueeze(1))
             loss.backward()  # Derive gradients.
             optimizer.step()  # Update parameters based on gradients.
             optimizer.zero_grad()  # Clear gradients.
-    return loss #the final loss at each epoch
+    #         loss_temp += loss.item()
+    #     total_samples += len(train_loader.dataset)
+    # train_loss = loss_temp/total_samples #the final loss at each epoch
+    # return train_loss
 
-
-def test(model, loader, device):
+def model_eval(model, criterion, loader, device):
     model.eval()
     correct = 0
+    loss_temp = 0
     for data in loader:  # Iterate in batches over the training/test dataset.
         data = data.to(device) 
-        #out = model.module.inference(data)
         out = model(data)
-        #pred = out.argmax(dim=1)  # Use the class with highest probability.
-        #correct += int((pred == data.y).sum())  # Check against ground-truth labels.
+        loss = criterion(out, data.y[:,-1].unsqueeze(1))
+        loss_temp += loss.item()
         pred = torch.round(torch.sigmoid(out))
-        correct += int((pred == data.y.unsqueeze(1)).sum())
-        
-    return correct, len(loader.dataset)
+        correct += int((pred == data.y[:,-1].unsqueeze(1)).sum())
+    return loss_temp, correct, len(loader.dataset)  
 
-def get_accuracy(model, ini_file, end_file, batch_size, device):
+def get_performance(model, criterion, ini_file, end_file, batch_size, device):
     cr_types = ['gamma','proton']
     correct = 0 
     total_samples = 0
+    final_loss = 0
     for idx in range(ini_file,end_file):
         temp_dataset = list()
         for cr_type in cr_types:
             temp_dataset += dataset.get(cr_type,idx)
             temp_loader = DataLoader(temp_dataset, batch_size=batch_size, shuffle=False)
-        correct_temp, total_samples_temp  = test(model, temp_loader, device)
+        loss_temp, correct_temp, total_samples_temp  = model_eval(model, criterion, temp_loader, device)
+        final_loss += loss_temp
         correct += correct_temp
         total_samples += total_samples_temp
+    final_loss = final_loss/total_samples
     acc = correct/total_samples
-    return acc
+    return final_loss, acc
+
+def save_ckp(state, is_best, checkpoint_path, best_model_path):
+    """
+    state: checkpoint we want to save
+    is_best: is this the best checkpoint; min validation loss
+    checkpoint_path: path to save checkpoint
+    best_model_path: path to save best model
+    """
+    f_path = checkpoint_path
+    # save checkpoint data to the path given, checkpoint_path
+    torch.save(state, f_path)
+    # if it is a best model, min validation loss
+    if is_best:
+        best_fpath = best_model_path
+        # copy that checkpoint file to best path given, best_model_path
+        shutil.copyfile(f_path, best_fpath)
+
+def load_ckp(checkpoint_fpath, model, optimizer):
+    """
+    checkpoint_path: path to save checkpoint
+    model: model that we want to load checkpoint parameters into       
+    optimizer: optimizer we defined in previous training
+    """
+    # load check point
+    checkpoint = torch.load(checkpoint_fpath)
+    # initialize state_dict from checkpoint to model
+    model.load_state_dict(checkpoint['state_dict'])
+    # initialize optimizer from checkpoint to optimizer
+    optimizer.load_state_dict(checkpoint['optimizer'])
+    # initialize valid_loss_min from checkpoint to valid_loss_min
+    valid_loss_min = checkpoint['valid_loss_min']
+    # return model, optimizer, epoch value, min validation loss 
+    return model, optimizer, checkpoint['epoch'], valid_loss_min
 
 
 if __name__ == '__main__':
 
     # #### get the dataset and have a look
-    indir = '/home/woody/caph/mppi067h/gamma_ray_reconstruction_with_ml/gnn/phase2d2_bbruno_large/'
-    outdir = '/home/woody/caph/mppi067h/gamma_ray_reconstruction_with_ml/gnn/phase2d2_dataset_large'
-    out_model_dir = '/home/woody/caph/mppi067h/gamma_ray_reconstruction_with_ml/gnn/trained_models_single_gpu2/'
+    analysis_type = 'mono'
+    indir = '/home/woody/caph/mppi067h/gamma_ray_reconstruction_with_ml/gnn/hess_datasets/phase2d3/'
+    outdir = '/home/saturn/caph/mppi067h/graph_datasets/phase2d3/' +  analysis_type
+    out_model_dir = '/home/woody/caph/mppi067h/gamma_ray_reconstruction_with_ml/gnn/trained_models/phase2d3/' + analysis_type
     dataset_name = 'test'
+    best_model_path = out_model_dir + f'/model_best.pth'
     
     dataset = MyDataset(outdir,dataset_name,indir,1)
-    num_epochs = 30
-    batch_size = 256
+    start_epoch = 1
+    num_epochs = 200
+    batch_sizes = {'mono': 1024,
+                   'stereo': 512,
+                    'hybrid': 256}#for mono = 1024, for stereo 512, for hybrid 256
+    batch_size = batch_sizes[analysis_type]
     file_ini = 0 
-    file_end = 30
+    file_end = 50
+    learning_rate = 1e-3
     #run the model
-    train_test_split = int((file_end - file_ini)*0.8)
-    print('train_test_split', file_ini, train_test_split, file_end)
+    train_valid_split = int((file_end - file_ini)*0.8)
+    print('train_validation_split', file_ini, train_valid_split, file_end)
     torch.manual_seed(12345)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = GCN(nb_inputs=3, nb_outputs=1).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    #criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     criterion = torch.nn.BCEWithLogitsLoss()
-    for epoch in range(1, num_epochs):
+    
+    valid_loss_min = np.Inf
+    if(os.path.exists(best_model_path)):
+        model, optimizer, start_epoch, valid_loss_min = load_ckp(best_model_path, model, optimizer)  
+        start_epoch = start_epoch + 1
+    for epoch in range(start_epoch, num_epochs):
         print('starting epoch', epoch)
-        loss = train(model, criterion, optimizer, file_ini, train_test_split, batch_size, device)
-        train_acc = get_accuracy(model, file_ini, train_test_split, batch_size, device)
-        test_acc = get_accuracy(model, train_test_split, file_end, batch_size, device)
+        train(model, criterion, optimizer, file_ini, train_valid_split, batch_size, device)
+        train_loss, train_acc = get_performance(model, criterion, file_ini, train_valid_split, batch_size, device)
+        valid_loss, valid_acc = get_performance(model, criterion, train_valid_split, file_end, batch_size, device)
         
-        print(f'Epoch: {epoch:03d}, Train Acc: {train_acc:.4f}, Test Acc: {test_acc:.4f}')
-        torch.save(model.state_dict(),out_model_dir + f'/model_{epoch}_loss{loss:.2f}_tr{train_acc:.2f}_te{test_acc:.2f}.pth')
+        print(f'Epoch: {epoch:03d}, train loss: {train_loss*1e5:.4f}, validation loss: {valid_loss*1e5:.4f}, Train Acc: {train_acc:.4f}, Validation Acc: {valid_acc:.4f}')
+        checkpoint_path = out_model_dir + f'/model_{epoch}_loss_tr{train_loss*1e5:.2f}_loss_val{valid_loss*1e5:.2f}_tr{train_acc:.2f}_val{valid_acc:.2f}.pth'
+        
+        # create checkpoint variable and add important data
+        checkpoint = {
+            'epoch': epoch,
+            'valid_loss_min': valid_loss,
+            'state_dict': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+        }
+        
+        # save checkpoint
+        save_ckp(checkpoint, False, checkpoint_path, best_model_path)
+        
+        ## TODO: save the model if validation loss has decreased
+        if valid_loss <= valid_loss_min:
+            print('Validation loss decreased ({:.6f} --> {:.6f}).  Saving model ...'.format(valid_loss_min,valid_loss))
+            # save checkpoint as best model
+            save_ckp(checkpoint, True, checkpoint_path, best_model_path)
+            valid_loss_min = valid_loss
